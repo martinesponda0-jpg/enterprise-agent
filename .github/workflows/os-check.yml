@@ -125,15 +125,19 @@ jobs:
           set -euo pipefail
           installer=$(ls "$GITHUB_WORKSPACE"/release/*.exe | head -1)
           echo "Installer: $installer"
+          touch "$RUNNER_TEMP/before-install"
           "$installer" /S
           programs="$(cygpath -u "$LOCALAPPDATA")/Programs"
-          for _ in $(seq 1 60); do
-            exe=$(find "$programs" -maxdepth 2 -iname 't3code.exe' 2>/dev/null | head -1 || true)
+          exe=""
+          for _ in $(seq 1 90); do
+            exe=$(find "$programs" -maxdepth 2 -iname '*.exe' -newer "$RUNNER_TEMP/before-install" 2>/dev/null | grep -v -i -E 'uninstall|elevate' | head -1 || true)
             [[ -n "$exe" ]] && break
             sleep 2
           done
+          echo "Installed files:"; find "$programs" -maxdepth 2 -newer "$RUNNER_TEMP/before-install" | head -20
+          [[ -n "$exe" ]] || { echo "No installed executable found"; exit 1; }
           echo "Installed executable: $exe"
-          ls "$(dirname "$exe")" | head -20
+          sleep 5
           node scripts/smoke-desktop-app.ts --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" --executable "$exe"
 
       - name: Upload launch screenshots and test log
