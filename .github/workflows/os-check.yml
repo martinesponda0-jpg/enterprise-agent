@@ -123,8 +123,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exe=$(find "$GITHUB_WORKSPACE/release" -path '*unpacked*' -name '*.exe' -maxdepth 3 | grep -v -i -E 'uninstall|elevate|helper' | head -1)
-          echo "Executable: $exe"
+          installer=$(ls "$GITHUB_WORKSPACE"/release/*.exe | head -1)
+          echo "Installer: $installer"
+          "$installer" /S
+          programs="$(cygpath -u "$LOCALAPPDATA")/Programs"
+          for _ in $(seq 1 60); do
+            exe=$(find "$programs" -maxdepth 2 -iname 't3code.exe' 2>/dev/null | head -1 || true)
+            [[ -n "$exe" ]] && break
+            sleep 2
+          done
+          echo "Installed executable: $exe"
+          ls "$(dirname "$exe")" | head -20
           node scripts/smoke-desktop-app.ts --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" --executable "$exe"
 
       - name: Upload launch screenshots and test log
@@ -138,7 +147,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload installer
-        if: steps.build.outcome == 'success'
+        if: always() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sequoia-ai-${{ matrix.platform }}-${{ matrix.arch }}
