@@ -157,7 +157,33 @@ jobs:
           [[ -n "$exe" ]] || { echo "No installed executable found"; exit 1; }
           echo "Installed executable: $exe"
           sleep 5
-          node scripts/smoke-desktop-app.ts --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" --executable "$exe"
+          # Playwright's Electron launcher does not work with the packaged Windows app (upstream
+          # skips it too), so open the app normally and check it stays up with its window shown.
+          mkdir -p "$RUNNER_TEMP/desktop-launch-check"
+          EXE="$(cygpath -w "$exe")" SHOT="$(cygpath -w "$RUNNER_TEMP/desktop-launch-check/windows.png")" \
+            powershell -NoProfile -ExecutionPolicy Bypass -Command '
+              $ErrorActionPreference = "Stop"
+              $p = Start-Process -FilePath $env:EXE -PassThru
+              $title = ""
+              for ($i = 0; $i -lt 60; $i++) {
+                Start-Sleep -Seconds 2
+                $w = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path -eq $env:EXE } | Select-Object -First 1
+                if ($w) { $title = $w.MainWindowTitle; if ($title) { break } }
+                if ($p.HasExited -and -not (Get-Process | Where-Object { $_.Path -eq $env:EXE })) { throw "The app closed right after opening (exit code $($p.ExitCode))." }
+              }
+              Start-Sleep -Seconds 15
+              Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+              $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save($env:SHOT)
+              $alive = @(Get-Process | Where-Object { $_.Path -eq $env:EXE })
+              Write-Output "Window title: $title; running processes: $($alive.Count)"
+              if (-not $title) { throw "The app never showed a window." }
+              if ($alive.Count -eq 0) { throw "The app closed after showing its window." }
+              if ($title -notmatch "Sequoia") { throw "Unexpected window title: $title" }
+              $alive | Stop-Process -Force
+            '
 
       - name: Upload launch screenshots and test log
         if: always()
