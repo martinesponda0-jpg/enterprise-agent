@@ -1,0 +1,150 @@
+name: OS check (Sequoia AI)
+
+# Builds the desktop app on Linux, macOS and Windows, runs the desktop and
+# branding tests natively, and opens the packaged app to confirm it starts and
+# shows a thread. Lives only on the ci/os-check branch of the fork.
+
+on:
+  push:
+    branches:
+      - ci/os-check
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: os-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux
+            runner: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          - label: macOS
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - label: Windows
+            runner: windows-2025
+            platform: win
+            target: nsis
+            arch: x64
+            rust_target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      - name: Install Linux desktop build libraries
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config xvfb
+          command -v magick || command -v convert || sudo apt-get install -y imagemagick
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Desktop tests
+        id: desktop_tests
+        continue-on-error: true
+        shell: bash
+        run: vp test run apps/desktop 2>&1 | tee "$RUNNER_TEMP/desktop-tests.txt"; exit "${PIPESTATUS[0]}"
+
+      - name: Branding tests
+        shell: bash
+        run: |
+          vp test run \
+            packages/provider-core/src/server/orchestrationInstructions.test.ts \
+            apps/server/src/provider/AgentContextBudget.test.ts \
+            apps/desktop/src/app/DesktopAppIdentity.test.ts \
+            apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Build desktop artifact
+        id: build
+        shell: bash
+        run: vp run dist:desktop:artifact --platform "${{ matrix.platform }}" --target "${{ matrix.target }}" --arch "${{ matrix.arch }}" --verbose
+
+      - name: Launch check (macOS)
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$RUNNER_TEMP/desktop-launch-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$(ls "$GITHUB_WORKSPACE"/release/*.dmg)"
+          trap 'hdiutil detach "$mount" -force >/dev/null || true' EXIT
+          app=$(ls -d "$mount"/*.app)
+          echo "App bundle: $app"
+          executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
+          node scripts/smoke-desktop-app.ts --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" --executable "$app/Contents/MacOS/$executable"
+
+      - name: Launch check (Linux)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimage=$(ls "$GITHUB_WORKSPACE"/release/*.AppImage)
+          echo "AppImage: $appimage"
+          chmod +x "$appimage"
+          (cd "$RUNNER_TEMP" && "$appimage" --appimage-extract >/dev/null)
+          xvfb-run -a node scripts/smoke-desktop-app.ts --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" --executable "$RUNNER_TEMP/squashfs-root/t3code"
+
+      - name: Launch check (Windows)
+        if: matrix.platform == 'win'
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(find "$GITHUB_WORKSPACE/release" -path '*unpacked*' -name '*.exe' -maxdepth 3 | grep -v -i -E 'uninstall|elevate|helper' | head -1)
+          echo "Executable: $exe"
+          node scripts/smoke-desktop-app.ts --artifacts-dir "$RUNNER_TEMP/desktop-launch-check" --executable "$exe"
+
+      - name: Upload launch screenshots and test log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: os-check-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/desktop-launch-check
+            ${{ runner.temp }}/desktop-tests.txt
+          if-no-files-found: ignore
+
+      - name: Upload installer
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sequoia-ai-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/*.AppImage
+            release/*.exe
+          if-no-files-found: ignore
+          retention-days: 7
