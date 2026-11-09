@@ -68,6 +68,18 @@ jobs:
       - name: Setup dependencies
         uses: ./.github/actions/setup-ci-deps
 
+      # GitHub's Electron downloads sometimes time out (HTTP 504); retry instead of failing the run.
+      - name: Download Electron (with retries)
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          for attempt in 1 2 3 4 5; do
+            node node_modules/electron/install.js && node -e "require('electron')" && exit 0
+            echo "Electron download failed (attempt $attempt), retrying in 20s"
+            sleep 20
+          done
+          exit 1
+
       - name: Desktop tests
         id: desktop_tests
         continue-on-error: true
@@ -92,7 +104,13 @@ jobs:
       - name: Build desktop artifact
         id: build
         shell: bash
-        run: vp run dist:desktop:artifact --platform "${{ matrix.platform }}" --target "${{ matrix.target }}" --arch "${{ matrix.arch }}" --verbose
+        run: |
+          for attempt in 1 2 3; do
+            vp run dist:desktop:artifact --platform "${{ matrix.platform }}" --target "${{ matrix.target }}" --arch "${{ matrix.arch }}" --verbose && exit 0
+            echo "Build failed (attempt $attempt), retrying in 30s"
+            sleep 30
+          done
+          exit 1
 
       - name: Launch check (macOS)
         if: matrix.platform == 'mac'
