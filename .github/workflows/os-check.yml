@@ -22,6 +22,10 @@ jobs:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 80
+    env:
+      # Keep Electron and electron-builder downloads in one place so they can be cached between runs.
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.download-cache/electron-builder
+      electron_config_cache: ${{ github.workspace }}/.download-cache/electron
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +60,15 @@ jobs:
           git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git -c checkout.workers=0 checkout --detach FETCH_HEAD
+
+      # GitHub release downloads (Electron, 7-Zip, NSIS, AppImage tools) sometimes time out;
+      # reuse what an earlier run already downloaded.
+      - name: Restore download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .download-cache
+          key: os-check-downloads-${{ matrix.platform }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: os-check-downloads-${{ matrix.platform }}-
 
       - name: Install Linux desktop build libraries
         if: matrix.platform == 'linux'
