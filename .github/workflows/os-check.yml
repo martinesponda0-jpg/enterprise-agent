@@ -129,12 +129,13 @@ jobs:
           "$installer" /S
           programs="$(cygpath -u "$LOCALAPPDATA")/Programs"
           exe=""
+          # The installer keeps the archive's timestamps, so look the app up by its folder name.
           for _ in $(seq 1 90); do
-            exe=$(find "$programs" -maxdepth 2 -iname '*.exe' -newer "$RUNNER_TEMP/before-install" 2>/dev/null | grep -v -i -E 'uninstall|elevate' | head -1 || true)
+            exe=$(find "$programs" -maxdepth 2 -iname '*.exe' 2>/dev/null | grep -i -E 't3code|sequoia' | grep -v -i -E 'uninstall|elevate' | head -1 || true)
             [[ -n "$exe" ]] && break
             sleep 2
           done
-          echo "Installed files:"; find "$programs" -maxdepth 2 -newer "$RUNNER_TEMP/before-install" | head -20
+          echo "Programs folder:"; ls -la "$programs" || true
           [[ -n "$exe" ]] || { echo "No installed executable found"; exit 1; }
           echo "Installed executable: $exe"
           sleep 5
